@@ -254,34 +254,55 @@
       </ol>
       <div style="background:#fef3c7; padding:8px 12px; border-radius:6px; margin-bottom:8px; font-size:12px; color:#92400e;">
         <b>⚠️ 코드 업데이트 안내:</b> 이전에 설정하신 분도 아래 코드로 <b>다시 교체</b>한 뒤 Apps Script에서 <b>배포 → 배포 관리 → 연필(편집) 아이콘 → 버전: 새 버전 → 배포</b>를 눌러 재배포해주세요. (URL은 그대로 유지됨)
+        <br><br>
+        <b>📋 기존 데이터가 어긋난 경우 (헤더가 옛 8컬럼인 경우):</b> 새 코드는 헤더를 자동으로 표준화합니다. 깨끗하게 시작하려면 구글시트의 <b>모든 행(데이터 포함) 삭제 후</b> ☁️ 동기화를 한 번 실행하세요 — 헤더가 새로 생성되고 다음 저장부터 정상 동작합니다.
       </div>
-      <textarea id="appsScriptCode" readonly style="height:220px; font-size:11px;">function doPost(e) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  const data = JSON.parse(e.postData.contents);
-  // 헤더 자동 생성
+      <textarea id="appsScriptCode" readonly style="height:280px; font-size:11px;">const EXPECTED_HEADER = ['저장일시','발주일자','발주차수','발주자','거래처','상품명','색상','수량','옵션원본'];
+
+// 시트 헤더를 표준으로 자동 마이그레이션 (옛 8컬럼 → 새 9컬럼)
+function ensureHeader_(sheet) {
   if (sheet.getLastRow() === 0) {
-    sheet.appendRow(['저장일시','발주일자','발주차수','발주자','거래처','상품명','색상','수량','옵션원본']);
+    sheet.appendRow(EXPECTED_HEADER);
+    return;
   }
+  const cur = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0];
+  if (cur.indexOf('발주차수') === -1 && cur.indexOf('발주일자') !== -1) {
+    // 발주일자 다음 위치에 발주차수 컬럼 삽입 (기존 데이터도 한칸씩 우측 이동)
+    const dateIdx = cur.indexOf('발주일자');
+    sheet.insertColumnAfter(dateIdx + 1);
+    sheet.getRange(1, dateIdx + 2).setValue('발주차수');
+  }
+  // 헤더 행 통째로 표준화
+  sheet.getRange(1, 1, 1, EXPECTED_HEADER.length).setValues([EXPECTED_HEADER]);
+}
+
+function doPost(e) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  ensureHeader_(sheet);
+  const data = JSON.parse(e.postData.contents);
   const ts = new Date().toISOString();
   (data.items || []).forEach(it => {
     sheet.appendRow([
       ts,
-      data.date || '',
-      data.slot || '',
-      data.buyer || '',
-      it.supplier || data.supplier || '',
-      it.name || '',
-      it.color || '',
-      it.qty || '',
-      it.option || ''
+      String(data.date || ''),
+      String(data.slot || ''),
+      String(data.buyer || ''),
+      String(it.supplier || data.supplier || ''),
+      String(it.name || ''),
+      String(it.color || ''),
+      String(it.qty || ''),
+      String(it.option || '')
     ]);
   });
   return ContentService.createTextOutput(JSON.stringify({status:'ok', saved: (data.items || []).length}))
     .setMimeType(ContentService.MimeType.JSON);
 }
+
 function doGet(e) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  const values = sheet.getDataRange().getValues();
+  ensureHeader_(sheet);
+  // getDisplayValues: 셀 표시값 그대로(문자열) — 날짜가 ISO/UTC로 변환되는 문제 방지
+  const values = sheet.getDataRange().getDisplayValues();
   return ContentService.createTextOutput(JSON.stringify(values))
     .setMimeType(ContentService.MimeType.JSON);
 }</textarea>
@@ -734,8 +755,26 @@ function getSupplierIdFromName(name) {
 // 구글시트 데이터(행 배열) → 백업 객체로 재구성
 // 같은 (날짜, 차수, 발주자) 키에 대해 가장 최근 저장된 batch만 사용
 // 진단 정보도 함께 반환
+// ISO 날짜 또는 다양한 포맷 → YYYY-MM-DD 정규화
+function normalizeDate(v) {
+  if (!v) return '';
+  const s = String(v).trim();
+  // 이미 YYYY-MM-DD 형식
+  const m1 = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m1) return `${m1[1]}-${m1[2]}-${m1[3]}`;
+  // YYYY/MM/DD 또는 YYYY. M. D
+  const m2 = s.match(/^(\d{4})[\/.](\d{1,2})[\/.](\d{1,2})/);
+  if (m2) return `${m2[1]}-${m2[2].padStart(2,'0')}-${m2[3].padStart(2,'0')}`;
+  // 기타 — Date 파싱 시도 (KST 기준)
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) {
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+  return s;
+}
+
 function parseSheetToBackups(rows) {
-  const diag = { totalRows: 0, dataRows: 0, parsedKeys: 0, unknownBuyers: new Set(), unknownSuppliers: new Set(), emptySupplier: 0 };
+  const diag = { totalRows: 0, dataRows: 0, parsedKeys: 0, unknownBuyers: new Set(), unknownSuppliers: new Set(), emptySupplier: 0, columnShiftWarning: false };
   if (!rows || rows.length < 2) return { grouped: {}, diag };
   diag.totalRows = rows.length;
 
@@ -756,6 +795,12 @@ function parseSheetToBackups(rows) {
     diag.error = `헤더에서 필수 컬럼을 못 찾았습니다. 발견된 헤더: [${header.join(', ')}]`;
     return { grouped: {}, diag };
   }
+  // 발주차수 컬럼이 없으면 옛 헤더(8컬럼) → 컬럼 어긋남 경고
+  if (c.slot < 0) {
+    diag.columnShiftWarning = true;
+    diag.error = '시트 헤더가 옛 형식(발주차수 컬럼 없음)입니다. 구글시트를 비우고 한 번 더 동기화하면 자동 마이그레이션됩니다. (Apps Script 재배포 필요)';
+    return { grouped: {}, diag };
+  }
 
   const dataRows = rows.slice(1);
   diag.dataRows = dataRows.length;
@@ -763,10 +808,13 @@ function parseSheetToBackups(rows) {
   // 1단계: 키별 최신 저장일시
   const latestTs = {};
   dataRows.forEach(row => {
-    const ts = row[c.ts], date = row[c.date], slot = row[c.slot] || '', buyer = row[c.buyer];
+    const ts = row[c.ts];
+    const date = normalizeDate(row[c.date]);
+    const slot = String(row[c.slot] || '').trim();
+    const buyer = String(row[c.buyer] || '').trim();
     if (!ts || !date || !buyer) return;
-    const buyerId = getBuyerIdFromName(String(buyer).trim());
-    if (!buyerId) { diag.unknownBuyers.add(String(buyer)); return; }
+    const buyerId = getBuyerIdFromName(buyer);
+    if (!buyerId) { diag.unknownBuyers.add(buyer); return; }
     const key = `${date}__${slot}__${buyerId}`;
     const tsStr = String(ts);
     if (!latestTs[key] || tsStr > latestTs[key]) latestTs[key] = tsStr;
@@ -775,26 +823,29 @@ function parseSheetToBackups(rows) {
   // 2단계: 최신 batch만 수집
   const grouped = {};
   dataRows.forEach(row => {
-    const ts = row[c.ts], date = row[c.date], slot = row[c.slot] || '';
-    const buyer = row[c.buyer], supplier = row[c.supplier];
+    const ts = row[c.ts];
+    const date = normalizeDate(row[c.date]);
+    const slot = String(row[c.slot] || '').trim();
+    const buyer = String(row[c.buyer] || '').trim();
+    const supplier = String(row[c.supplier] || '').trim();
     const name = row[c.name], color = row[c.color] || '', qty = row[c.qty] || '';
     if (!ts || !date) return;
-    const buyerId = getBuyerIdFromName(String(buyer || '').trim());
+    const buyerId = getBuyerIdFromName(buyer);
     if (!buyerId) return;
     const key = `${date}__${slot}__${buyerId}`;
     if (String(ts) !== latestTs[key]) return;
 
     if (!grouped[key]) {
       grouped[key] = {
-        date, slot, buyer: String(buyer), buyerId,
+        date, slot, buyer, buyerId,
         suppliers: {}, totalItems: 0, savedAt: String(ts)
       };
     }
-    const supStr = String(supplier || '').trim();
-    if (!supStr) { diag.emptySupplier++; return; }
-    const supId = getSupplierIdFromName(supStr);
-    if (!supId) { diag.unknownSuppliers.add(supStr); return; }
+    if (!supplier) { diag.emptySupplier++; return; }
+    const supId = getSupplierIdFromName(supplier);
+    if (!supId) { diag.unknownSuppliers.add(supplier); return; }
     if (!name) return;
+    const supStr = supplier;
     if (!grouped[key].suppliers[supId]) grouped[key].suppliers[supId] = [];
     grouped[key].suppliers[supId].push({
       name: String(name), color: String(color), qty: String(qty)

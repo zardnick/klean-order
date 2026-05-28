@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>사방넷 수집 자동 발주서</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: "맑은 고딕", "Malgun Gothic", sans-serif;
+    margin: 0; padding: 20px; background: #f5f6fa; color: #222;
+  }
+  h1 { margin: 0 0 14px 0; font-size: 22px; }
+  .panel {
+    background: #fff; padding: 16px 18px; border-radius: 10px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05); margin-bottom: 16px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  textarea {
+    width: 100%; min-height: 120px; font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px; padding: 8px; border: 1px solid #ccc; border-radius: 6px;
+  }
+  button {
+    padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;
+    background: #2563eb; color: #fff; font-weight: 600; font-size: 14px;
+  }
+  button:hover { background: #1d4ed8; }
+  button.secondary { background: #6b7280; }
+  button.secondary:hover { background: #4b5563; }
+  button.danger { background: #dc2626; }
+  button.print { background: #059669; }
+  button.print:hover { background: #047857; }
+  button.purple { background: #7c3aed; }
+  button.purple:hover { background: #6d28d9; }
+
+  .supplier-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .tab-btn {
+    background: #e5e7eb; color: #111; padding: 10px 18px;
+    border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px;
+    border: 2px solid transparent;
+  }
+  .tab-btn:hover { background: #d1d5db; }
+  .tab-btn.active { background: #2563eb; color: #fff; border-color: #1e40af; }
+  .tab-btn .badge {
+    display: inline-block; background: #ef4444; color: #fff;
+    border-radius: 10px; padding: 1px 7px; font-size: 11px; margin-left: 6px;
+  }
+  .tab-btn.active .badge { background: #fff; color: #2563eb; }
+  .tab-btn.empty .badge { background: #9ca3af; }
+
+  /* drag area */
+  .drop-zone {
+    border: 2px dashed #9ca3af; border-radius: 10px; padding: 24px; text-align: center;
+    color: #6b7280; background: #fafafa; cursor: pointer; transition: 0.2s;
+  }
+  .drop-zone.dragover { border-color: #2563eb; background: #eff6ff; color: #2563eb; }
+  .drop-zone b { color: #111; }
+
+  /* 발주서 */
+  .form-wrap { background: #fff; padding: 24px; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+  .form {
+    width: 210mm; margin: 0 auto; padding: 12mm;
+    background: #fff; border: 1px solid #ddd; font-size: 12pt;
+  }
+  .form-title {
+    text-align: center; font-size: 26pt; font-weight: 700;
+    letter-spacing: 14px; margin: 0 0 14px 0;
+  }
+  table.info { width: 100%; border-collapse: collapse; margin-bottom: 6px; font-size: 11pt; }
+  table.info td { border: 1px solid #333; padding: 6px 8px; vertical-align: middle; }
+  table.info td.label { background: #f3f4f6; font-weight: 600; text-align: center; width: 14%; }
+  table.info td.val { width: 36%; }
+  .header-statement { margin: 10px 0 4px 0; font-size: 12pt; font-weight: 600; }
+  .header-note { margin: 0 0 8px 0; font-size: 10pt; color: #b91c1c; }
+  table.items { width: 100%; border-collapse: collapse; font-size: 11pt; }
+  table.items th, table.items td {
+    border: 1px solid #333; padding: 5px 6px; text-align: center; vertical-align: middle;
+  }
+  table.items th { background: #fde68a; font-weight: 700; }
+  table.items td.product { text-align: left; }
+  table.items td[contenteditable="true"]:hover { background: #fef9c3; }
+  table.items td[contenteditable="true"]:focus { background: #fff7ed; outline: 2px solid #f59e0b; }
+  .total-row td { background: #fde68a; font-weight: 700; }
+  .reminder { font-size: 10pt; color: #444; margin-top: 8px; padding: 8px; background: #fef3c7; border-radius: 4px; }
+
+  /* Row controls (편집 모드) */
+  td.no-cell { position: relative; }
+  .row-del {
+    display: none; position: absolute; left: -28px; top: 50%; transform: translateY(-50%);
+    width: 22px; height: 22px; border-radius: 50%; background: #ef4444; color: #fff;
+    border: none; cursor: pointer; font-size: 12px; line-height: 1; font-weight: bold;
+  }
+  tr:hover .row-del { display: inline-block; }
+  .row-del:hover { background: #b91c1c; }
+  .form-toolbar {
+    display: flex; gap: 8px; margin-top: 10px; padding: 8px;
+    background: #f9fafb; border-radius: 6px; align-items: center;
+  }
+  .form-toolbar button { padding: 6px 12px; font-size: 13px; }
+  .form-toolbar .hint { color: #6b7280; font-size: 12px; }
+
+  .help { background: #eff6ff; padding: 10px 14px; border-left: 4px solid #2563eb; font-size: 13px; margin-bottom: 12px; border-radius: 4px; }
+  .msg { color: #6b7280; font-size: 13px; margin-left: 8px; }
+  select, input[type=text], input[type=date] { padding: 7px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+
+  /* Modal */
+  .modal-bg {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 1000; align-items: flex-start; justify-content: center; padding: 30px;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: #fff; border-radius: 10px; padding: 20px; width: 90%; max-width: 900px;
+    max-height: 85vh; overflow-y: auto;
+  }
+  .modal h2 { margin: 0 0 12px 0; }
+  .history-list { list-style: none; padding: 0; margin: 0; }
+  .history-list li {
+    border-bottom: 1px solid #e5e7eb; padding: 10px 6px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .history-list li:hover { background: #f9fafb; }
+  .history-meta { color: #6b7280; font-size: 12px; }
+
+  /* Print */
+  @media print {
+    body { background: #fff; padding: 0; }
+    .no-print { display: none !important; }
+    .form-wrap { box-shadow: none; padding: 0; border-radius: 0; }
+    .form { border: none; padding: 8mm; width: auto; }
+    .form-toolbar { display: none !important; }
+    .row-del { display: none !important; }
+    @page { size: A4; margin: 8mm; }
+  }
+</style>
+</head>
+<body>
+
+<div class="no-print">
+  <h1>사방넷 수집 자동 발주서</h1>
+
+  <div class="panel">
+    <div class="help">
+      <b>사용법:</b> 사방넷 주문확인 엑셀 파일을 아래 영역에 <b>드래그&드롭</b> 또는 클릭해 업로드 → 자동 분류 → 거래처 버튼 클릭 → 인쇄
+    </div>
+
+    <div id="dropZone" class="drop-zone">
+      📁 <b>여기에 엑셀 파일을 드롭하거나 클릭해서 업로드</b><br>
+      <span style="font-size:12px;">지원 형식: .xlsx, .xls, .csv — 상품명/옵션/수량 컬럼 자동 감지</span>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none;" />
+    </div>
+
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer; color:#6b7280;">직접 텍스트 붙여넣기 (선택)</summary>
+      <textarea id="rawData" placeholder="상품명	옵션	수량
+예시 상품	규격: A / 칼라: 화이트	3" style="margin-top:8px;"></textarea>
+      <div class="row" style="margin-top:8px;">
+        <button onclick="classifyFromText()">📦 텍스트 분류</button>
+      </div>
+    </details>
+
+    <div class="row" style="margin-top:10px; gap: 16px;">
+      <div>
+        <label>발주자: </label>
+        <select id="buyerSelect">
+          <option value="kyungsung">경성전업사 (216-14-19019)</option>
+          <option value="clean">클린 (620-27-00820)</option>
+        </select>
+      </div>
+      <div>
+        <label>발주일자: </label>
+        <input type="date" id="dateInput" />
+      </div>
+      <button class="secondary" onclick="clearAll()">초기화</button>
+      <button class="purple" onclick="openHistory()">📚 백업 이력</button>
+      <button class="purple" onclick="openSettings()">⚙️ 구글시트 설정</button>
+      <span class="msg" id="statusMsg"></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <b>거래처 선택</b>
+    <div class="supplier-tabs" id="supplierTabs"></div>
+  </div>
+</div>
+
+<div class="form-wrap" id="formArea">
+  <div style="text-align:center; color:#9ca3af; padding:40px;">
+    상단에서 거래처 버튼을 선택하세요.
+  </div>
+</div>
+
+<div class="no-print" style="text-align:center; margin-top:14px;">
+  <button class="print" onclick="window.print()">🖨️ 인쇄</button>
+  <button class="purple" onclick="saveBackup()">💾 백업 저장 (이 날짜)</button>
+</div>
+
+<!-- ====== History Modal ====== -->
+<div class="modal-bg" id="historyModal">
+  <div class="modal">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h2>📚 백업 이력</h2>
+      <button class="secondary" onclick="closeModal('historyModal')">닫기</button>
+    </div>
+    <div style="margin-bottom:10px;" class="row">
+      <button onclick="exportAllJSON()">전체 JSON 내보내기</button>
+      <button class="secondary" onclick="importJSON()">JSON 가져오기</button>
+      <input type="file" id="importFile" accept=".json" style="display:none;" />
+      <span class="msg">로컬 저장 + 구글시트 동시 백업 (구글시트 설정 시)</span>
+    </div>
+    <ul class="history-list" id="historyList"></ul>
+  </div>
+</div>
+
+<!-- ====== History Detail Modal ====== -->
+<div class="modal-bg" id="detailModal">
+  <div class="modal">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h2 id="detailTitle">백업 상세</h2>
+      <button class="secondary" onclick="closeModal('detailModal')">닫기</button>
+    </div>
+    <div id="detailContent" style="font-size:13px;"></div>
+  </div>
+</div>
+
+<!-- ====== Settings Modal ====== -->
+<div class="modal-bg" id="settingsModal">
+  <div class="modal">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h2>⚙️ 구글시트 백업 설정</h2>
+      <button class="secondary" onclick="closeModal('settingsModal')">닫기</button>
+    </div>
+    <div style="margin-top:10px;">
+      <p>구글시트 자동 백업을 사용하려면 Google Apps Script 웹앱 URL이 필요합니다.</p>
+      <ol style="font-size:13px; line-height:1.7;">
+        <li>새 구글시트 생성 (예: "발주서 백업")</li>
+        <li>확장 프로그램 → Apps Script 클릭</li>
+        <li>아래 코드를 붙여넣고 저장</li>
+        <li>배포 → 새 배포 → 유형: <b>웹 앱</b> → 액세스: <b>모든 사용자</b> → 배포</li>
+        <li>생성된 웹앱 URL을 아래에 붙여넣기</li>
+      </ol>
+      <textarea id="appsScriptCode" readonly style="height:180px; font-size:11px;">function doPost(e) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const data = JSON.parse(e.postData.contents);
+  // 헤더 자동 생성
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(['저장일시','발주일자','발주자','거래처','상품명','색상','수량','옵션원본']);
+  }
+  const ts = new Date().toISOString();
+  (data.items || []).forEach(it => {
+    sheet.appendRow([ts, data.date, data.buyer, data.supplier, it.name, it.color, it.qty, it.option || '']);
+  });
+  return ContentService.createTextOutput(JSON.stringify({status:'ok', saved: (data.items || []).length}))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+function doGet(e) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const values = sheet.getDataRange().getValues();
+  return ContentService.createTextOutput(JSON.stringify(values))
+    .setMimeType(ContentService.MimeType.JSON);
+}</textarea>
+      <div class="row" style="margin-top:10px;">
+        <input type="text" id="webhookUrl" placeholder="https://script.google.com/macros/s/.../exec" style="flex:1; min-width:300px;" />
+        <button onclick="saveWebhook()">저장</button>
+        <button class="secondary" onclick="testWebhook()">연결 테스트</button>
+      </div>
+      <div id="settingsMsg" class="msg" style="margin-top:8px;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ====== 거래처 정의 ======
+const SUPPLIERS = [
+  { id: 'seoul',    name: '서울전재',     statement: '㈜서울전재에 아래와 같이 발주합니다.',
+    keywords: ['르그랑','아펠라','아테오'], rowCount: 20 },
+  { id: 'boeun',    name: '보은전기',     statement: '㈜보은전기에 아래와 같이 발주합니다.',
+    keywords: ['파나소닉','panasonic','신동아','리젠','베가와이드','플래티마','라온'], rowCount: 24 },
+  { id: 'jeonwon',  name: '전원씨티엠',   statement: '㈜전원씨티엠에 아래와 같이 발주합니다.',
+    keywords: ['위너스','진흥','서울산전','다이아','fs시리즈','v시리즈','벨로'], rowCount: 20 },
+  { id: 'hanguk',   name: '한국전기',     statement: '㈜한국전기에 아래와 같이 발주합니다.',
+    keywords: ['나노 유로','오딧세이','아트2','나노'], rowCount: 20 },
+  { id: 'min',      name: '민라이트',     statement: '㈜민라이트에 아래와 같이 발주합니다.',
+    keywords: ['스텐','구로철판','골드철판'], rowCount: 20 },
+  { id: 'dongyang', name: '동양일렉트릭', statement: '㈜동양일렉트릭에 아래와 같이 발주합니다.',
+    keywords: ['동양','연장선'], rowCount: 20 }
+];
+
+const BUYERS = {
+  kyungsung: { name: '경성전업사', address: '서울시 중구 창경궁로 56-1', ceo: '김학현\n(김광연)', biz: '216-14-19019', tel: '010-9913-4002' },
+  clean:     { name: '클 린',       address: '서울시 중구 창경궁로 62, 5층', ceo: '김광연',          biz: '620-27-00820', tel: '010-9913-4002' }
+};
+
+let classified = {};
+SUPPLIERS.forEach(s => classified[s.id] = []);
+let currentSupplier = null;
+
+// ====== Date init ======
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+document.getElementById('dateInput').value = todayStr();
+document.getElementById('dateInput').addEventListener('change', () => {
+  if (currentSupplier) renderForm(currentSupplier);
+});
+
+// ====== 키워드 매칭 ======
+function matchSupplier(productName, optionName) {
+  const text = ((productName || '') + ' ' + (optionName || '')).toLowerCase();
+  for (const s of SUPPLIERS) {
+    for (const kw of s.keywords) {
+      if (text.includes(kw.toLowerCase())) {
+        return { supplier: s, matchedKeyword: kw };
+      }
+    }
+  }
+  return null;
+}
+
+// ====== 옵션 파싱 (규격: ... / 칼라: ...) ======
+function parseOption(opt) {
+  if (!opt) return { spec: '', color: '' };
+  const s = String(opt);
+  let spec = '', color = '';
+  const colorMatch = s.match(/(?:칼라|컬러|색상|color)\s*[:：]\s*([^\/|]+)/i);
+  if (colorMatch) color = colorMatch[1].trim();
+  const specMatch = s.match(/(?:규격|옵션|spec)\s*[:：]\s*([^\/|]+)/i);
+  if (specMatch) spec = specMatch[1].trim();
+  if (!color && !spec) spec = s;
+  return { spec, color };
+}
+
+// ====== 텍스트 파싱 ======
+function parseRaw(text) {
+  const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const delim = lines[0].includes('\t') ? '\t' : ',';
+  const headers = lines[0].split(delim).map(h => h.trim());
+  return lines.slice(1).map(line => {
+    const parts = line.split(delim);
+    const obj = {};
+    headers.forEach((h, i) => obj[h] = (parts[i] || '').trim());
+    return obj;
+  });
+}
+function findColumn(row, candidates) {
+  const keys = Object.keys(row);
+  for (const cand of candidates) {
+    for (const k of keys) {
+      if (k.replace(/\s/g,'').toLowerCase().includes(cand.toLowerCase())) return k;
+    }
+  }
+  return null;
+}
+
+// ====== 분류 실행 (행 객체 배열을 받음) ======
+function classifyRows(rows) {
+  if (!rows || rows.length === 0) {
+    setStatus('데이터가 없습니다.', '#dc2626'); return;
+  }
+  const sample = rows[0];
+  const colProduct = findColumn(sample, ['상품명','상품','품명','product']);
+  const colOption  = findColumn(sample, ['옵션','수집옵션','option']);
+  const colQty     = findColumn(sample, ['수량','qty','quantity']);
+
+  if (!colProduct) {
+    setStatus('상품명 컬럼을 찾을 수 없습니다.', '#dc2626'); return;
+  }
+
+  SUPPLIERS.forEach(s => classified[s.id] = []);
+  let unmatched = 0;
+  rows.forEach(row => {
+    const product = colProduct ? row[colProduct] : '';
+    const option  = colOption  ? row[colOption]  : '';
+    const qty     = colQty     ? row[colQty]     : '1';
+    const m = matchSupplier(product, option);
+    if (!m) { unmatched++; return; }
+    const parsed = parseOption(option);
+    classified[m.supplier.id].push({
+      name: product,
+      color: parsed.color || '',
+      qty: qty,
+      option: option,
+      spec: parsed.spec,
+      matchedKeyword: m.matchedKeyword
+    });
+  });
+
+  const matched = rows.length - unmatched;
+  renderTabs();
+  setStatus(`분류 완료 — 총 ${rows.length}건 / 매칭 ${matched}건 / 미매칭 ${unmatched}건`, matched ? '#059669' : '#b45309');
+  const firstWith = SUPPLIERS.find(s => classified[s.id].length > 0);
+  if (firstWith) selectSupplier(firstWith.id);
+}
+
+function classifyFromText() {
+  const txt = document.getElementById('rawData').value;
+  if (!txt.trim()) { setStatus('텍스트를 입력해주세요.', '#dc2626'); return; }
+  classifyRows(parseRaw(txt));
+}
+
+function setStatus(msg, color) {
+  const el = document.getElementById('statusMsg');
+  el.textContent = msg;
+  el.style.color = color || '#6b7280';
+}
+
+// ====== 탭 렌더 ======
+function renderTabs() {
+  const wrap = document.getElementById('supplierTabs');
+  wrap.innerHTML = '';
+  SUPPLIERS.forEach(s => {
+    const cnt = classified[s.id].length;
+    const btn = document.createElement('div');
+    btn.className = 'tab-btn' + (cnt === 0 ? ' empty' : '') + (currentSupplier === s.id ? ' active' : '');
+    btn.innerHTML = s.name + ` <span class="badge">${cnt}</span>`;
+    btn.onclick = () => selectSupplier(s.id);
+    wrap.appendChild(btn);
+  });
+}
+
+function selectSupplier(id) {
+  currentSupplier = id;
+  renderTabs();
+  renderForm(id);
+}
+
+// ====== 발주서 렌더 ======
+function renderForm(supplierId) {
+  const supplier = SUPPLIERS.find(s => s.id === supplierId);
+  const items = classified[supplierId] || [];
+  const buyer = BUYERS[document.getElementById('buyerSelect').value];
+  const dateStr = document.getElementById('dateInput').value || todayStr();
+  const rowCount = Math.max(supplier.rowCount, items.length);
+
+  let rowsHtml = '';
+  let totalQty = 0;
+  for (let i = 0; i < rowCount; i++) {
+    const it = items[i];
+    const name = it ? escapeHtml(it.name) : '';
+    const color = it ? escapeHtml(it.color) : '';
+    const qty = it ? escapeHtml(String(it.qty)) : '';
+    if (it && !isNaN(parseFloat(it.qty))) totalQty += parseFloat(it.qty);
+    rowsHtml += `<tr>
+      <td class="no-cell"><button class="row-del no-print" onclick="deleteRow(this)" title="행 삭제">✕</button><span class="row-no"></span></td>
+      <td class="product" contenteditable="true">${name}</td>
+      <td contenteditable="true">${color}</td>
+      <td class="qty-cell" contenteditable="true">${qty}</td>
+      <td contenteditable="true"></td>
+    </tr>`;
+  }
+
+  document.getElementById('formArea').innerHTML = `
+    <div class="form" id="printableForm">
+      <div class="form-title">발 주 서</div>
+      <table class="info">
+        <tr>
+          <td class="label">상 호 명</td><td class="val" contenteditable="true">${escapeHtml(buyer.name)}</td>
+          <td class="label">주 소</td><td class="val" contenteditable="true">${escapeHtml(buyer.address)}</td>
+        </tr>
+        <tr>
+          <td class="label">대표자명</td><td class="val" contenteditable="true">${escapeHtml(buyer.ceo).replace(/\n/g,'<br>')}</td>
+          <td class="label">사업자번호</td><td class="val" contenteditable="true">${escapeHtml(buyer.biz)}</td>
+        </tr>
+        <tr>
+          <td class="label">발주일자</td><td class="val" contenteditable="true">${dateStr}</td>
+          <td class="label">전 화</td><td class="val" contenteditable="true">${escapeHtml(buyer.tel)}</td>
+        </tr>
+      </table>
+
+      <div class="header-statement">${escapeHtml(supplier.statement)}</div>
+      <div class="header-note">제품 구매자가 당일 배송 요청한 건 입니다. 당일 출고를 위해, 빠른 물품 전달 협조 부탁드립니다.</div>
+
+      <div class="form-toolbar no-print">
+        <button onclick="addRow()">➕ 행 추가</button>
+        <button onclick="addRow(5)">+5행</button>
+        <button class="secondary" onclick="addRow(0, true)">맨 위에 행 추가</button>
+        <span class="hint">셀을 클릭해 직접 수정 · 행 위 마우스 호버 시 좌측에 ✕ 버튼 표시</span>
+      </div>
+
+      <table class="items">
+        <thead>
+          <tr>
+            <th style="width:7%;">No</th>
+            <th style="width:43%;">상품명</th>
+            <th style="width:18%;">색상</th>
+            <th style="width:10%;">수량</th>
+            <th style="width:22%;">비고</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml}
+          <tr class="total-row">
+            <td colspan="3">총 계</td>
+            <td id="totalCell">${totalQty || ''}</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="reminder">주의사항: 상기 件 늦게 도착 시 발주를 취소해야 될 수 있으니 출하가 늦어질 경우 반드시 연락바랍니다.</div>
+    </div>
+  `;
+  renumberRows();
+  recalcTotal();
+  attachLiveRecalc();
+}
+
+// ====== 행 추가 / 삭제 / 번호매김 / 합계 ======
+function getItemsTbody() {
+  const form = document.getElementById('printableForm');
+  return form ? form.querySelector('table.items tbody') : null;
+}
+function getDataRows() {
+  const tbody = getItemsTbody();
+  if (!tbody) return [];
+  return Array.from(tbody.querySelectorAll('tr')).filter(tr => !tr.classList.contains('total-row'));
+}
+function renumberRows() {
+  getDataRows().forEach((tr, i) => {
+    const span = tr.querySelector('.row-no');
+    if (span) span.textContent = (i + 1);
+  });
+}
+function recalcTotal() {
+  let total = 0;
+  getDataRows().forEach(tr => {
+    const q = tr.querySelector('.qty-cell');
+    if (q) {
+      const v = parseFloat(q.textContent.trim().replace(/,/g, ''));
+      if (!isNaN(v)) total += v;
+    }
+  });
+  const cell = document.getElementById('totalCell');
+  if (cell) cell.textContent = total || '';
+}
+function attachLiveRecalc() {
+  const tbody = getItemsTbody();
+  if (!tbody) return;
+  tbody.addEventListener('input', e => {
+    if (e.target && e.target.classList && e.target.classList.contains('qty-cell')) {
+      recalcTotal();
+    }
+  });
+}
+function addRow(n, top) {
+  const tbody = getItemsTbody();
+  if (!tbody) return;
+  const count = (n && n > 0) ? n : 1;
+  const totalRow = tbody.querySelector('tr.total-row');
+  for (let i = 0; i < count; i++) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="no-cell"><button class="row-del no-print" onclick="deleteRow(this)" title="행 삭제">✕</button><span class="row-no"></span></td>
+      <td class="product" contenteditable="true"></td>
+      <td contenteditable="true"></td>
+      <td class="qty-cell" contenteditable="true"></td>
+      <td contenteditable="true"></td>`;
+    if (top) {
+      tbody.insertBefore(tr, tbody.firstChild);
+    } else {
+      tbody.insertBefore(tr, totalRow);
+    }
+  }
+  renumberRows();
+  recalcTotal();
+  // 새 행의 상품명 셀에 포커스
+  const focusTr = top ? tbody.firstChild : (totalRow.previousElementSibling);
+  if (focusTr) {
+    const cell = focusTr.querySelector('.product');
+    if (cell) cell.focus();
+  }
+}
+function deleteRow(btn) {
+  const tr = btn.closest('tr');
+  if (!tr) return;
+  const cells = tr.querySelectorAll('td[contenteditable="true"]');
+  const hasContent = Array.from(cells).some(c => c.textContent.trim() !== '');
+  if (hasContent && !confirm('이 행을 삭제하시겠습니까?')) return;
+  tr.remove();
+  renumberRows();
+  recalcTotal();
+}
+
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ====== 파일 업로드 (드래그앤드롭 + 클릭) ======
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', e => { dropZone.classList.remove('dragover'); });
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+
+function handleFile(file) {
+  setStatus(`파일 로딩 중: ${file.name}...`, '#2563eb');
+  const reader = new FileReader();
+  reader.onload = function(evt) {
+    try {
+      const data = new Uint8Array(evt.target.result);
+      const wb = XLSX.read(data, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      classifyRows(rows);
+    } catch (err) {
+      setStatus(`파일 처리 오류: ${err.message}`, '#dc2626');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+
+  // 파일명에서 날짜 추출 시도 (예: 20260528_...)
+  const m = file.name.match(/(\d{4})(\d{2})(\d{2})/);
+  if (m) document.getElementById('dateInput').value = `${m[1]}-${m[2]}-${m[3]}`;
+}
+
+function clearAll() {
+  document.getElementById('rawData').value = '';
+  SUPPLIERS.forEach(s => classified[s.id] = []);
+  currentSupplier = null;
+  renderTabs();
+  document.getElementById('formArea').innerHTML = '<div style="text-align:center; color:#9ca3af; padding:40px;">상단에서 거래처 버튼을 선택하세요.</div>';
+  setStatus('');
+}
+
+document.getElementById('buyerSelect').addEventListener('change', () => {
+  if (currentSupplier) renderForm(currentSupplier);
+});
+
+// ====== 백업 (localStorage + Google Sheets) ======
+const STORAGE_KEY = 'sabangnet_orders_v1';
+const WEBHOOK_KEY = 'sabangnet_webhook_v1';
+
+function loadBackups() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; }
+}
+function saveBackups(obj) { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); }
+
+function saveBackup() {
+  if (!currentSupplier) { setStatus('먼저 거래처를 선택하세요.', '#dc2626'); return; }
+  const date = document.getElementById('dateInput').value || todayStr();
+  const buyer = document.getElementById('buyerSelect').value;
+  const buyerName = BUYERS[buyer].name;
+  const supplier = SUPPLIERS.find(s => s.id === currentSupplier);
+
+  // 현재 화면(편집 반영된) 행을 읽음
+  const rows = document.querySelectorAll('#printableForm table.items tbody tr:not(.total-row)');
+  const items = [];
+  rows.forEach(tr => {
+    const cells = tr.querySelectorAll('td');
+    if (cells.length < 5) return;
+    const name = cells[1].textContent.trim();
+    const color = cells[2].textContent.trim();
+    const qty = cells[3].textContent.trim();
+    if (name) items.push({ name, color, qty });
+  });
+  if (items.length === 0) { setStatus('저장할 항목이 없습니다.', '#dc2626'); return; }
+
+  const backups = loadBackups();
+  const key = `${date}__${supplier.id}__${buyer}`;
+  backups[key] = {
+    date, supplier: supplier.name, supplierId: supplier.id,
+    buyer: buyerName, buyerId: buyer,
+    items, savedAt: new Date().toISOString()
+  };
+  saveBackups(backups);
+  setStatus(`로컬 백업 저장: ${date} / ${supplier.name} / ${items.length}건`, '#059669');
+
+  // 구글시트 백업 (설정된 경우)
+  const url = localStorage.getItem(WEBHOOK_KEY);
+  if (url) {
+    fetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ date, buyer: buyerName, supplier: supplier.name, items })
+    }).then(r => r.text()).then(t => {
+      setStatus(`백업 완료 (로컬+구글시트): ${date} / ${supplier.name} / ${items.length}건`, '#059669');
+    }).catch(e => {
+      setStatus(`로컬 저장됨. 구글시트 전송 실패: ${e.message}`, '#b45309');
+    });
+  }
+}
+
+function openHistory() {
+  renderHistory();
+  document.getElementById('historyModal').classList.add('show');
+}
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+function renderHistory() {
+  const backups = loadBackups();
+  const keys = Object.keys(backups).sort().reverse();
+  const ul = document.getElementById('historyList');
+  if (keys.length === 0) {
+    ul.innerHTML = '<li style="color:#9ca3af; padding:20px; text-align:center;">저장된 백업이 없습니다.</li>';
+    return;
+  }
+  ul.innerHTML = keys.map(k => {
+    const b = backups[k];
+    return `<li>
+      <div>
+        <b>${b.date}</b> — ${escapeHtml(b.supplier)} (${escapeHtml(b.buyer)})
+        <div class="history-meta">${b.items.length}건 · 저장 ${new Date(b.savedAt).toLocaleString('ko-KR')}</div>
+      </div>
+      <div>
+        <button onclick="showDetail('${k}')">상세</button>
+        <button class="secondary" onclick="loadBackupItem('${k}')">불러오기</button>
+        <button class="danger" onclick="deleteBackup('${k}')">삭제</button>
+      </div>
+    </li>`;
+  }).join('');
+}
+
+function showDetail(key) {
+  const b = loadBackups()[key];
+  if (!b) return;
+  document.getElementById('detailTitle').textContent = `${b.date} — ${b.supplier} (${b.buyer})`;
+  const rows = b.items.map((it, i) => `<tr>
+    <td>${i+1}</td><td>${escapeHtml(it.name)}</td><td>${escapeHtml(it.color)}</td><td>${escapeHtml(it.qty)}</td>
+  </tr>`).join('');
+  document.getElementById('detailContent').innerHTML = `
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <thead><tr style="background:#fde68a;">
+        <th style="border:1px solid #333; padding:4px;">No</th>
+        <th style="border:1px solid #333; padding:4px;">상품명</th>
+        <th style="border:1px solid #333; padding:4px;">색상</th>
+        <th style="border:1px solid #333; padding:4px;">수량</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  document.getElementById('detailModal').classList.add('show');
+}
+
+function loadBackupItem(key) {
+  const b = loadBackups()[key];
+  if (!b) return;
+  document.getElementById('dateInput').value = b.date;
+  document.getElementById('buyerSelect').value = b.buyerId;
+  SUPPLIERS.forEach(s => classified[s.id] = []);
+  classified[b.supplierId] = b.items.map(it => ({
+    name: it.name, color: it.color, qty: it.qty, option: ''
+  }));
+  renderTabs();
+  selectSupplier(b.supplierId);
+  closeModal('historyModal');
+  setStatus(`불러옴: ${b.date} / ${b.supplier}`, '#059669');
+}
+
+function deleteBackup(key) {
+  if (!confirm('이 백업을 삭제하시겠습니까?')) return;
+  const backups = loadBackups();
+  delete backups[key];
+  saveBackups(backups);
+  renderHistory();
+}
+
+function exportAllJSON() {
+  const data = JSON.stringify(loadBackups(), null, 2);
+  const blob = new Blob([data], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `발주서_백업_${todayStr()}.json`;
+  a.click();
+}
+
+function importJSON() { document.getElementById('importFile').click(); }
+document.getElementById('importFile').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const data = JSON.parse(r.result);
+      const cur = loadBackups();
+      Object.assign(cur, data);
+      saveBackups(cur);
+      renderHistory();
+      alert('가져오기 완료');
+    } catch (err) { alert('JSON 파싱 실패: ' + err.message); }
+  };
+  r.readAsText(f);
+});
+
+// ====== Settings ======
+function openSettings() {
+  document.getElementById('webhookUrl').value = localStorage.getItem(WEBHOOK_KEY) || '';
+  document.getElementById('settingsModal').classList.add('show');
+}
+function saveWebhook() {
+  const url = document.getElementById('webhookUrl').value.trim();
+  if (url) localStorage.setItem(WEBHOOK_KEY, url);
+  else localStorage.removeItem(WEBHOOK_KEY);
+  document.getElementById('settingsMsg').textContent = url ? '저장 완료' : '비활성화';
+  document.getElementById('settingsMsg').style.color = '#059669';
+}
+function testWebhook() {
+  const url = document.getElementById('webhookUrl').value.trim();
+  if (!url) { document.getElementById('settingsMsg').textContent = 'URL 입력 필요'; return; }
+  document.getElementById('settingsMsg').textContent = '테스트 중...';
+  fetch(url, {
+    method: 'POST',
+    body: JSON.stringify({ date: todayStr(), buyer: '테스트', supplier: '연결테스트', items: [{ name: '테스트', color: '-', qty: 1 }] })
+  }).then(r => r.text()).then(t => {
+    document.getElementById('settingsMsg').textContent = '✅ 성공: ' + t.slice(0, 100);
+    document.getElementById('settingsMsg').style.color = '#059669';
+  }).catch(e => {
+    document.getElementById('settingsMsg').textContent = '❌ 실패: ' + e.message;
+    document.getElementById('settingsMsg').style.color = '#dc2626';
+  });
+}
+
+// 초기 렌더
+renderTabs();
+</script>
+
+</body>
+</html>

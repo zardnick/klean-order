@@ -204,7 +204,7 @@
 
 <div class="no-print" style="text-align:center; margin-top:14px;">
   <button class="print" onclick="window.print()">🖨️ 인쇄</button>
-  <button class="purple" onclick="syncWithGoogleSheets()">☁️ 구글시트 동기화 (저장+다른PC 이력 가져오기)</button>
+  <button class="purple" onclick="syncWithGoogleSheets()">☁️ 구글시트 동기화(저장)</button>
 </div>
 
 <!-- ====== History Modal ====== -->
@@ -252,7 +252,10 @@
         <li>배포 → 새 배포 → 유형: <b>웹 앱</b> → 액세스: <b>모든 사용자</b> → 배포</li>
         <li>생성된 웹앱 URL을 아래에 붙여넣기</li>
       </ol>
-      <textarea id="appsScriptCode" readonly style="height:180px; font-size:11px;">function doPost(e) {
+      <div style="background:#fef3c7; padding:8px 12px; border-radius:6px; margin-bottom:8px; font-size:12px; color:#92400e;">
+        <b>⚠️ 코드 업데이트 안내:</b> 이전에 설정하신 분도 아래 코드로 <b>다시 교체</b>한 뒤 Apps Script에서 <b>배포 → 배포 관리 → 연필(편집) 아이콘 → 버전: 새 버전 → 배포</b>를 눌러 재배포해주세요. (URL은 그대로 유지됨)
+      </div>
+      <textarea id="appsScriptCode" readonly style="height:220px; font-size:11px;">function doPost(e) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   const data = JSON.parse(e.postData.contents);
   // 헤더 자동 생성
@@ -261,7 +264,17 @@
   }
   const ts = new Date().toISOString();
   (data.items || []).forEach(it => {
-    sheet.appendRow([ts, data.date, data.slot || '', data.buyer, data.supplier, it.name, it.color, it.qty, it.option || '']);
+    sheet.appendRow([
+      ts,
+      data.date || '',
+      data.slot || '',
+      data.buyer || '',
+      it.supplier || data.supplier || '',
+      it.name || '',
+      it.color || '',
+      it.qty || '',
+      it.option || ''
+    ]);
   });
   return ContentService.createTextOutput(JSON.stringify({status:'ok', saved: (data.items || []).length}))
     .setMimeType(ContentService.MimeType.JSON);
@@ -720,49 +733,88 @@ function getSupplierIdFromName(name) {
 
 // 구글시트 데이터(행 배열) → 백업 객체로 재구성
 // 같은 (날짜, 차수, 발주자) 키에 대해 가장 최근 저장된 batch만 사용
+// 진단 정보도 함께 반환
 function parseSheetToBackups(rows) {
-  if (!rows || rows.length < 2) return {};
-  const dataRows = rows.slice(1); // 헤더 제외
+  const diag = { totalRows: 0, dataRows: 0, parsedKeys: 0, unknownBuyers: new Set(), unknownSuppliers: new Set(), emptySupplier: 0 };
+  if (!rows || rows.length < 2) return { grouped: {}, diag };
+  diag.totalRows = rows.length;
 
-  // 1단계: 키별 최신 저장일시 찾기
+  // 헤더에서 컬럼 위치 자동 감지
+  const header = rows[0].map(h => String(h || '').trim());
+  const findCol = (...keys) => header.findIndex(h => keys.some(k => h.includes(k)));
+  const c = {
+    ts:       findCol('저장일시','일시','timestamp'),
+    date:     findCol('발주일자','날짜','일자'),
+    slot:     findCol('발주차수','차수','시간'),
+    buyer:    findCol('발주자','구매자'),
+    supplier: findCol('거래처','공급처'),
+    name:     findCol('상품명','품명'),
+    color:    findCol('색상','칼라','컬러'),
+    qty:      findCol('수량','qty'),
+  };
+  if (c.date < 0 || c.buyer < 0 || c.supplier < 0 || c.name < 0) {
+    diag.error = `헤더에서 필수 컬럼을 못 찾았습니다. 발견된 헤더: [${header.join(', ')}]`;
+    return { grouped: {}, diag };
+  }
+
+  const dataRows = rows.slice(1);
+  diag.dataRows = dataRows.length;
+
+  // 1단계: 키별 최신 저장일시
   const latestTs = {};
   dataRows.forEach(row => {
-    const [ts, date, slot, buyer] = row;
+    const ts = row[c.ts], date = row[c.date], slot = row[c.slot] || '', buyer = row[c.buyer];
     if (!ts || !date || !buyer) return;
-    const buyerId = getBuyerIdFromName(buyer);
-    if (!buyerId) return;
-    const key = `${date}__${slot || ''}__${buyerId}`;
-    if (!latestTs[key] || String(ts) > String(latestTs[key])) latestTs[key] = ts;
+    const buyerId = getBuyerIdFromName(String(buyer).trim());
+    if (!buyerId) { diag.unknownBuyers.add(String(buyer)); return; }
+    const key = `${date}__${slot}__${buyerId}`;
+    const tsStr = String(ts);
+    if (!latestTs[key] || tsStr > latestTs[key]) latestTs[key] = tsStr;
   });
 
-  // 2단계: 최신 batch에 해당하는 행만 수집
+  // 2단계: 최신 batch만 수집
   const grouped = {};
   dataRows.forEach(row => {
-    const [ts, date, slot, buyer, supplier, name, color, qty] = row;
+    const ts = row[c.ts], date = row[c.date], slot = row[c.slot] || '';
+    const buyer = row[c.buyer], supplier = row[c.supplier];
+    const name = row[c.name], color = row[c.color] || '', qty = row[c.qty] || '';
     if (!ts || !date) return;
-    const buyerId = getBuyerIdFromName(buyer);
+    const buyerId = getBuyerIdFromName(String(buyer || '').trim());
     if (!buyerId) return;
-    const key = `${date}__${slot || ''}__${buyerId}`;
-    if (String(ts) !== String(latestTs[key])) return; // 이전 batch는 스킵
+    const key = `${date}__${slot}__${buyerId}`;
+    if (String(ts) !== latestTs[key]) return;
 
     if (!grouped[key]) {
       grouped[key] = {
-        date, slot: slot || '',
-        buyer, buyerId,
-        suppliers: {},
-        totalItems: 0,
-        savedAt: String(ts)
+        date, slot, buyer: String(buyer), buyerId,
+        suppliers: {}, totalItems: 0, savedAt: String(ts)
       };
     }
-    const supId = getSupplierIdFromName(supplier);
-    if (!supId || !name) return;
+    const supStr = String(supplier || '').trim();
+    if (!supStr) { diag.emptySupplier++; return; }
+    const supId = getSupplierIdFromName(supStr);
+    if (!supId) { diag.unknownSuppliers.add(supStr); return; }
+    if (!name) return;
     if (!grouped[key].suppliers[supId]) grouped[key].suppliers[supId] = [];
     grouped[key].suppliers[supId].push({
-      name: String(name), color: String(color || ''), qty: String(qty || '')
+      name: String(name), color: String(color), qty: String(qty)
     });
     grouped[key].totalItems++;
   });
-  return grouped;
+  diag.parsedKeys = Object.keys(grouped).length;
+  return { grouped, diag };
+}
+
+// 진단 정보 사람이 읽기 쉽게 포맷
+function formatDiag(diag) {
+  const parts = [];
+  if (diag.error) parts.push(`❌ ${diag.error}`);
+  parts.push(`시트 행 ${diag.dataRows}개`);
+  if (diag.emptySupplier) parts.push(`⚠️ 거래처 빈칸 ${diag.emptySupplier}건`);
+  if (diag.unknownBuyers && diag.unknownBuyers.size) parts.push(`알 수 없는 발주자: ${[...diag.unknownBuyers].join(',')}`);
+  if (diag.unknownSuppliers && diag.unknownSuppliers.size) parts.push(`알 수 없는 거래처: ${[...diag.unknownSuppliers].join(',')}`);
+  parts.push(`재구성 백업 ${diag.parsedKeys}개`);
+  return parts.join(' · ');
 }
 
 // ===== 메인 동기화 함수 =====
@@ -831,33 +883,37 @@ async function syncWithGoogleSheets() {
   // 2) 구글시트에서 전체 데이터 가져와 로컬과 병합 (다른 컴퓨터 백업 포함)
   try {
     const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
     const text = await resp.text();
-    const allRows = JSON.parse(text);
+    if (text.trim().startsWith('<') || text.includes('<!DOCTYPE')) {
+      throw new Error('Apps Script doGet 함수가 없거나 배포되지 않았습니다. ⚙️ 구글시트 설정의 최신 코드로 교체 후 재배포해주세요.');
+    }
+    let allRows;
+    try { allRows = JSON.parse(text); }
+    catch (e) { throw new Error('JSON 파싱 실패: ' + text.substring(0, 80)); }
     if (!Array.isArray(allRows)) throw new Error('응답 형식 오류 (배열 아님)');
 
-    const reconstructed = parseSheetToBackups(allRows);
+    const { grouped: reconstructed, diag } = parseSheetToBackups(allRows);
     const merged = loadBackups();
     let newCount = 0, updatedCount = 0;
     Object.entries(reconstructed).forEach(([k, v]) => {
       const existing = merged[k];
-      if (!existing) {
-        merged[k] = v; newCount++;
-      } else if (String(v.savedAt) > String(existing.savedAt)) {
-        merged[k] = v; updatedCount++;
-      }
+      if (!existing) { merged[k] = v; newCount++; }
+      else if (String(v.savedAt) > String(existing.savedAt)) { merged[k] = v; updatedCount++; }
     });
     saveBackups(merged);
 
     const localMsg = totalItems > 0 ? `이번 저장 ${totalItems}건 (${summaryParts.join(' · ')})` : '저장할 데이터 없음';
-    const remoteMsg = `구글시트에서 신규 ${newCount}건 / 갱신 ${updatedCount}건`;
+    const remoteMsg = `구글시트에서 신규 ${newCount}건/갱신 ${updatedCount}건 (${formatDiag(diag)})`;
     setStatus(`✅ 동기화 완료 — ${localMsg} / ${remoteMsg}`, '#059669');
+    console.log('[sync diag]', diag);
 
-    // 이력 모달이 열려있으면 새로고침
     if (document.getElementById('historyModal').classList.contains('show')) {
       renderHistory();
     }
   } catch (e) {
     setStatus(`❌ 구글시트에서 가져오기 실패: ${e.message}`, '#dc2626');
+    console.error('[sync error]', e);
   }
 }
 
@@ -871,9 +927,17 @@ async function refreshFromGoogleSheets() {
   setStatus('☁️ 구글시트에서 가져오는 중...', '#2563eb');
   try {
     const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
     const text = await resp.text();
-    const allRows = JSON.parse(text);
-    const reconstructed = parseSheetToBackups(allRows);
+    if (text.trim().startsWith('<') || text.includes('<!DOCTYPE')) {
+      throw new Error('Apps Script doGet 함수가 없거나 배포되지 않았습니다. ⚙️ 구글시트 설정의 최신 코드로 교체 후 재배포해주세요.');
+    }
+    let allRows;
+    try { allRows = JSON.parse(text); }
+    catch (e) { throw new Error('JSON 파싱 실패: ' + text.substring(0, 80)); }
+    if (!Array.isArray(allRows)) throw new Error('응답 형식 오류 (배열 아님)');
+
+    const { grouped: reconstructed, diag } = parseSheetToBackups(allRows);
     const merged = loadBackups();
     let newCount = 0, updatedCount = 0;
     Object.entries(reconstructed).forEach(([k, v]) => {
@@ -883,9 +947,12 @@ async function refreshFromGoogleSheets() {
     });
     saveBackups(merged);
     renderHistory();
-    setStatus(`✅ 구글시트 동기화 — 신규 ${newCount}건 / 갱신 ${updatedCount}건`, '#059669');
+    const color = (newCount + updatedCount > 0) ? '#059669' : '#b45309';
+    setStatus(`구글시트 동기화 — 신규 ${newCount}건/갱신 ${updatedCount}건 (${formatDiag(diag)})`, color);
+    console.log('[refresh diag]', diag);
   } catch (e) {
     setStatus(`❌ 가져오기 실패: ${e.message}`, '#dc2626');
+    console.error('[refresh error]', e);
   }
 }
 
@@ -1056,20 +1123,40 @@ function saveWebhook() {
   document.getElementById('settingsMsg').textContent = url ? '저장 완료' : '비활성화';
   document.getElementById('settingsMsg').style.color = '#059669';
 }
-function testWebhook() {
+async function testWebhook() {
   const url = document.getElementById('webhookUrl').value.trim();
-  if (!url) { document.getElementById('settingsMsg').textContent = 'URL 입력 필요'; return; }
-  document.getElementById('settingsMsg').textContent = '테스트 중...';
-  fetch(url, {
-    method: 'POST',
-    body: JSON.stringify({ date: todayStr(), slot: '테스트', buyer: '테스트', supplier: '연결테스트', items: [{ name: '테스트', color: '-', qty: 1 }] })
-  }).then(r => r.text()).then(t => {
-    document.getElementById('settingsMsg').textContent = '✅ 성공: ' + t.slice(0, 100);
-    document.getElementById('settingsMsg').style.color = '#059669';
-  }).catch(e => {
-    document.getElementById('settingsMsg').textContent = '❌ 실패: ' + e.message;
-    document.getElementById('settingsMsg').style.color = '#dc2626';
-  });
+  const el = document.getElementById('settingsMsg');
+  if (!url) { el.textContent = 'URL 입력 필요'; return; }
+  el.textContent = '테스트 중... (POST + GET 양방향 확인)';
+  el.style.color = '#2563eb';
+  let postOk = false, getOk = false, getMsg = '';
+  // 1) POST 테스트
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ date: todayStr(), slot: '테스트', buyer: '테스트', items: [{ supplier: '연결테스트', name: '테스트행', color: '-', qty: 1 }] })
+    });
+    const t = await r.text();
+    postOk = !t.trim().startsWith('<');
+  } catch (e) { postOk = false; getMsg = 'POST 오류: ' + e.message; }
+  // 2) GET 테스트
+  try {
+    const r = await fetch(url);
+    const t = await r.text();
+    if (t.trim().startsWith('<')) {
+      getMsg = 'doGet 함수 없음 — Apps Script 코드 교체 후 재배포 필요';
+    } else {
+      try {
+        const data = JSON.parse(t);
+        if (Array.isArray(data)) { getOk = true; getMsg = `행 ${data.length}개 읽음`; }
+        else getMsg = 'JSON이지만 배열 아님';
+      } catch { getMsg = 'JSON 파싱 실패: ' + t.slice(0, 60); }
+    }
+  } catch (e) { getMsg = 'GET 오류: ' + e.message; }
+
+  const verdict = (postOk && getOk) ? '✅ 양방향 정상' : (postOk ? '⚠️ POST만 동작' : '❌ 실패');
+  el.textContent = `${verdict} — POST:${postOk?'OK':'NG'} / GET:${getOk?'OK':'NG'} (${getMsg})`;
+  el.style.color = (postOk && getOk) ? '#059669' : '#dc2626';
 }
 
 // 초기 렌더

@@ -203,7 +203,7 @@
 
 <div class="no-print" style="text-align:center; margin-top:14px;">
   <button class="print" onclick="window.print()">🖨️ 인쇄</button>
-  <button class="purple" onclick="saveBackup()">💾 백업 저장 (이 날짜)</button>
+  <button class="purple" onclick="saveBackup()">💾 백업 저장 (이 날짜+차수, 전 거래처)</button>
 </div>
 
 <!-- ====== History Modal ====== -->
@@ -461,9 +461,30 @@ function renderTabs() {
 }
 
 function selectSupplier(id) {
+  // 탭 전환 전에 현재 화면 편집 내용을 메모리에 반영 (다른 탭 갔다 와도 보존)
+  harvestCurrentSupplier();
   currentSupplier = id;
   renderTabs();
   renderForm(id);
+}
+
+// 현재 발주서 화면(편집된 DOM)을 classified[currentSupplier]에 반영
+function harvestCurrentSupplier() {
+  if (!currentSupplier) return;
+  const form = document.getElementById('printableForm');
+  if (!form) return;
+  const trs = form.querySelectorAll('table.items tbody tr');
+  const items = [];
+  trs.forEach(tr => {
+    if (tr.classList.contains('total-row')) return;
+    const cells = tr.querySelectorAll('td');
+    if (cells.length < 5) return;
+    const name = cells[1].textContent.trim();
+    const color = cells[2].textContent.trim();
+    const qty = cells[3].textContent.trim();
+    if (name) items.push({ name, color, qty, option: '' });
+  });
+  classified[currentSupplier] = items;
 }
 
 // ====== 발주서 렌더 ======
@@ -684,45 +705,59 @@ function loadBackups() {
 function saveBackups(obj) { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); }
 
 function saveBackup() {
-  if (!currentSupplier) { setStatus('먼저 거래처를 선택하세요.', '#dc2626'); return; }
   const date = document.getElementById('dateInput').value || todayStr();
   const slot = document.getElementById('slotSelect').value;
   const buyer = document.getElementById('buyerSelect').value;
   const buyerName = BUYERS[buyer].name;
-  const supplier = SUPPLIERS.find(s => s.id === currentSupplier);
 
-  // 현재 화면(편집 반영된) 행을 읽음
-  const rows = document.querySelectorAll('#printableForm table.items tbody tr:not(.total-row)');
-  const items = [];
-  rows.forEach(tr => {
-    const cells = tr.querySelectorAll('td');
-    if (cells.length < 5) return;
-    const name = cells[1].textContent.trim();
-    const color = cells[2].textContent.trim();
-    const qty = cells[3].textContent.trim();
-    if (name) items.push({ name, color, qty });
+  // 현재 화면 편집 내용 반영
+  harvestCurrentSupplier();
+
+  // 모든 거래처의 아이템 수집
+  const suppliers = {};
+  let totalItems = 0;
+  const summaryParts = [];
+  SUPPLIERS.forEach(s => {
+    const items = (classified[s.id] || [])
+      .filter(it => it.name && String(it.name).trim())
+      .map(it => ({ name: it.name, color: it.color || '', qty: it.qty || '' }));
+    if (items.length > 0) {
+      suppliers[s.id] = items;
+      totalItems += items.length;
+      summaryParts.push(`${s.name} ${items.length}`);
+    }
   });
-  if (items.length === 0) { setStatus('저장할 항목이 없습니다.', '#dc2626'); return; }
+
+  if (totalItems === 0) { setStatus('저장할 항목이 없습니다. 데이터를 먼저 분류해주세요.', '#dc2626'); return; }
 
   const backups = loadBackups();
-  const key = `${date}__${slot}__${supplier.id}__${buyer}`;
+  const key = `${date}__${slot}__${buyer}`;
   backups[key] = {
     date, slot,
-    supplier: supplier.name, supplierId: supplier.id,
     buyer: buyerName, buyerId: buyer,
-    items, savedAt: new Date().toISOString()
+    suppliers,
+    totalItems,
+    savedAt: new Date().toISOString()
   };
   saveBackups(backups);
-  setStatus(`로컬 백업 저장: ${date} ${slot} / ${supplier.name} / ${items.length}건`, '#059669');
 
-  // 구글시트 백업 (설정된 경우)
+  const summary = `${date} ${slot} / ${buyerName} / 총 ${totalItems}건 (${summaryParts.join(' · ')})`;
+  setStatus(`로컬 백업 저장: ${summary}`, '#059669');
+
+  // 구글시트 백업 (설정된 경우): 전 거래처 행을 한 번에 전송
   const url = localStorage.getItem(WEBHOOK_KEY);
   if (url) {
+    const flatItems = [];
+    SUPPLIERS.forEach(s => {
+      (suppliers[s.id] || []).forEach(it => {
+        flatItems.push({ supplier: s.name, name: it.name, color: it.color, qty: it.qty });
+      });
+    });
     fetch(url, {
       method: 'POST',
-      body: JSON.stringify({ date, slot, buyer: buyerName, supplier: supplier.name, items })
+      body: JSON.stringify({ date, slot, buyer: buyerName, items: flatItems })
     }).then(r => r.text()).then(t => {
-      setStatus(`백업 완료 (로컬+구글시트): ${date} ${slot} / ${supplier.name} / ${items.length}건`, '#059669');
+      setStatus(`백업 완료 (로컬+구글시트): ${summary}`, '#059669');
     }).catch(e => {
       setStatus(`로컬 저장됨. 구글시트 전송 실패: ${e.message}`, '#b45309');
     });
@@ -746,10 +781,23 @@ function renderHistory() {
   ul.innerHTML = keys.map(k => {
     const b = backups[k];
     const slotLabel = b.slot ? `<span style="display:inline-block; background:#dbeafe; color:#1e40af; padding:1px 8px; border-radius:10px; font-size:11px; margin-left:6px;">${escapeHtml(b.slot)}</span>` : '';
+    // 신/구 포맷 모두 지원
+    let title, meta;
+    if (b.suppliers) {
+      const parts = SUPPLIERS.filter(s => b.suppliers[s.id])
+        .map(s => `${s.name} ${b.suppliers[s.id].length}`);
+      const total = b.totalItems || Object.values(b.suppliers).reduce((a, v) => a + v.length, 0);
+      title = `<b>${b.date}</b>${slotLabel} — ${escapeHtml(b.buyer)} <span style="color:#6b7280; font-size:13px;">전체 ${total}건</span>`;
+      meta = parts.join(' · ') + ` · 저장 ${new Date(b.savedAt).toLocaleString('ko-KR')}`;
+    } else {
+      // 구포맷 (단일 거래처)
+      title = `<b>${b.date}</b>${slotLabel} — ${escapeHtml(b.supplier || '')} (${escapeHtml(b.buyer || '')})`;
+      meta = `${(b.items||[]).length}건 · 저장 ${new Date(b.savedAt).toLocaleString('ko-KR')}`;
+    }
     return `<li>
       <div>
-        <b>${b.date}</b>${slotLabel} — ${escapeHtml(b.supplier)} (${escapeHtml(b.buyer)})
-        <div class="history-meta">${b.items.length}건 · 저장 ${new Date(b.savedAt).toLocaleString('ko-KR')}</div>
+        ${title}
+        <div class="history-meta">${meta}</div>
       </div>
       <div>
         <button onclick="showDetail('${k}')">상세</button>
@@ -763,20 +811,42 @@ function renderHistory() {
 function showDetail(key) {
   const b = loadBackups()[key];
   if (!b) return;
-  document.getElementById('detailTitle').textContent = `${b.date}${b.slot ? ' [' + b.slot + ']' : ''} — ${b.supplier} (${b.buyer})`;
-  const rows = b.items.map((it, i) => `<tr>
-    <td>${i+1}</td><td>${escapeHtml(it.name)}</td><td>${escapeHtml(it.color)}</td><td>${escapeHtml(it.qty)}</td>
-  </tr>`).join('');
-  document.getElementById('detailContent').innerHTML = `
-    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+  document.getElementById('detailTitle').textContent =
+    `${b.date}${b.slot ? ' [' + b.slot + ']' : ''} — ${b.buyer || ''}`;
+
+  let html = '';
+  const renderTable = (items) => {
+    const rows = items.map((it, i) => `<tr>
+      <td style="border:1px solid #333; padding:4px;">${i+1}</td>
+      <td style="border:1px solid #333; padding:4px; text-align:left;">${escapeHtml(it.name)}</td>
+      <td style="border:1px solid #333; padding:4px;">${escapeHtml(it.color)}</td>
+      <td style="border:1px solid #333; padding:4px;">${escapeHtml(it.qty)}</td>
+    </tr>`).join('');
+    return `<table style="width:100%; border-collapse:collapse; font-size:13px; margin-bottom:14px;">
       <thead><tr style="background:#fde68a;">
-        <th style="border:1px solid #333; padding:4px;">No</th>
+        <th style="border:1px solid #333; padding:4px; width:40px;">No</th>
         <th style="border:1px solid #333; padding:4px;">상품명</th>
-        <th style="border:1px solid #333; padding:4px;">색상</th>
-        <th style="border:1px solid #333; padding:4px;">수량</th>
+        <th style="border:1px solid #333; padding:4px; width:120px;">색상</th>
+        <th style="border:1px solid #333; padding:4px; width:60px;">수량</th>
       </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+      <tbody>${rows}</tbody></table>`;
+  };
+
+  if (b.suppliers) {
+    // 신포맷: 전 거래처
+    SUPPLIERS.forEach(s => {
+      const items = b.suppliers[s.id];
+      if (!items || items.length === 0) return;
+      html += `<h3 style="margin:14px 0 6px 0; font-size:14px; color:#1e40af;">🏢 ${escapeHtml(s.name)} <span style="color:#6b7280; font-weight:normal;">— ${items.length}건</span></h3>`;
+      html += renderTable(items);
+    });
+  } else if (b.items) {
+    // 구포맷
+    html += `<h3 style="margin:14px 0 6px 0; font-size:14px; color:#1e40af;">🏢 ${escapeHtml(b.supplier || '')}</h3>`;
+    html += renderTable(b.items);
+  }
+
+  document.getElementById('detailContent').innerHTML = html || '<div style="color:#9ca3af; padding:20px; text-align:center;">데이터 없음</div>';
   document.getElementById('detailModal').classList.add('show');
 }
 
@@ -784,16 +854,35 @@ function loadBackupItem(key) {
   const b = loadBackups()[key];
   if (!b) return;
   document.getElementById('dateInput').value = b.date;
-  document.getElementById('buyerSelect').value = b.buyerId;
+  if (b.buyerId) document.getElementById('buyerSelect').value = b.buyerId;
   if (b.slot) document.getElementById('slotSelect').value = b.slot;
+
+  // 모든 거래처 초기화
   SUPPLIERS.forEach(s => classified[s.id] = []);
-  classified[b.supplierId] = b.items.map(it => ({
-    name: it.name, color: it.color, qty: it.qty, option: ''
-  }));
+
+  if (b.suppliers) {
+    // 신포맷: 모든 거래처 한번에 복원
+    Object.keys(b.suppliers).forEach(sid => {
+      classified[sid] = b.suppliers[sid].map(it => ({
+        name: it.name, color: it.color, qty: it.qty, option: ''
+      }));
+    });
+  } else if (b.supplierId && b.items) {
+    // 구포맷 호환: 단일 거래처만 복원
+    classified[b.supplierId] = b.items.map(it => ({
+      name: it.name, color: it.color, qty: it.qty, option: ''
+    }));
+  }
+
+  currentSupplier = null; // 다음 selectSupplier에서 harvest 방지
   renderTabs();
-  selectSupplier(b.supplierId);
+  const firstWith = SUPPLIERS.find(s => (classified[s.id] || []).length > 0);
+  if (firstWith) selectSupplier(firstWith.id);
   closeModal('historyModal');
-  setStatus(`불러옴: ${b.date}${b.slot ? ' ' + b.slot : ''} / ${b.supplier}`, '#059669');
+
+  const totals = SUPPLIERS.filter(s => (classified[s.id] || []).length > 0)
+    .map(s => `${s.name} ${classified[s.id].length}`).join(' · ');
+  setStatus(`불러옴: ${b.date}${b.slot ? ' ' + b.slot : ''} / ${b.buyer || ''} (${totals})`, '#059669');
 }
 
 function deleteBackup(key) {

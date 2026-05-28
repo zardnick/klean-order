@@ -317,17 +317,37 @@ function matchSupplier(productName, optionName) {
   return null;
 }
 
-// ====== 옵션 파싱 (규격: ... / 칼라: ...) ======
+// ====== 옵션 파싱 ======
+// 옵션 문자열에서 "칼라/컬러" 뒤쪽 데이터는 색상 컬럼으로,
+// 나머지 부분은 상품명 컬럼으로 사용한다.
+// 다양한 포맷 지원:
+//   "규격: A / 칼라: 화이트"
+//   "칼라=화이트, 규격=A"
+//   "칼라: 화이트 / 갈리온 UP: 스위치 2구"
+//   "선택1: 아트2_화이트 / 선택2: 스위치 2구"  (라벨 없으면 그대로)
 function parseOption(opt) {
-  if (!opt) return { spec: '', color: '' };
-  const s = String(opt);
-  let spec = '', color = '';
-  const colorMatch = s.match(/(?:칼라|컬러|색상|color)\s*[:：]\s*([^\/|]+)/i);
-  if (colorMatch) color = colorMatch[1].trim();
-  const specMatch = s.match(/(?:규격|옵션|spec)\s*[:：]\s*([^\/|]+)/i);
-  if (specMatch) spec = specMatch[1].trim();
-  if (!color && !spec) spec = s;
-  return { spec, color };
+  if (!opt) return { productName: '', color: '' };
+  let s = String(opt).trim();
+  let color = '';
+
+  // 1) "칼라|컬러|색상" 뒤에 :, =, ：, 공백이 오고 값이 이어지는 패턴
+  //    값의 끝은 /, |, , (쉼표) 또는 문자열 끝
+  const colorRegex = /(?:칼라|컬러|색상|color)\s*[:：=]\s*([^\/|,]+)/i;
+  const cm = s.match(colorRegex);
+  if (cm) {
+    color = cm[1].trim();
+    // 매칭된 "칼라: 값" 블록과 인접 구분자 함께 제거
+    s = s.replace(/\s*[\/|,]?\s*(?:칼라|컬러|색상|color)\s*[:：=]\s*[^\/|,]+\s*[\/|,]?\s*/i, ' / ');
+    // 중복 구분자 정리
+    s = s.replace(/(\s*[\/|,]\s*){2,}/g, ' / ');
+    s = s.replace(/^\s*[\/|,]\s*|\s*[\/|,]\s*$/g, '').trim();
+  }
+
+  // 2) 남은 부분의 "규격:" 같은 라벨 정리
+  s = s.replace(/^(?:규격|옵션|spec)\s*[:：=]\s*/i, '').trim();
+  s = s.replace(/\s*[\/|,]\s*$/,'').trim();
+
+  return { productName: s, color };
 }
 
 // ====== 텍스트 파싱 ======
@@ -373,15 +393,18 @@ function classifyRows(rows) {
     const product = colProduct ? row[colProduct] : '';
     const option  = colOption  ? row[colOption]  : '';
     const qty     = colQty     ? row[colQty]     : '1';
+    // 매칭은 (상품명 + 옵션) 합쳐서 키워드 검색 — 상품명에 거래처 단서가 많음
     const m = matchSupplier(product, option);
     if (!m) { unmatched++; return; }
     const parsed = parseOption(option);
+    // 발주서 상품명에는 "옵션값(칼라 제외)"을 표시. 옵션이 비어있으면 원본 상품명 사용.
+    const displayName = parsed.productName || product;
     classified[m.supplier.id].push({
-      name: product,
+      name: displayName,
       color: parsed.color || '',
       qty: qty,
       option: option,
-      spec: parsed.spec,
+      originalProduct: product,
       matchedKeyword: m.matchedKeyword
     });
   });

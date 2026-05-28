@@ -140,7 +140,8 @@
 
   <div class="panel">
     <div class="help">
-      <b>사용법:</b> 사방넷 주문확인 엑셀 파일을 아래 영역에 <b>드래그&드롭</b> 또는 클릭해 업로드 → 자동 분류 → 거래처 버튼 클릭 → 인쇄
+      <b>사용법:</b> 사방넷 주문확인 엑셀 파일을 아래 영역에 <b>드래그&드롭</b> 또는 클릭해 업로드 → 자동 분류 → 거래처 버튼 클릭 → 인쇄<br>
+      <b>☁️ 구글시트 동기화</b> 버튼 한 번으로 현재 데이터를 클라우드에 저장 + 다른 컴퓨터에서 저장한 이력까지 모두 가져옵니다. (최초 1회 ⚙️ 구글시트 설정 필요)
     </div>
 
     <div id="dropZone" class="drop-zone">
@@ -203,7 +204,7 @@
 
 <div class="no-print" style="text-align:center; margin-top:14px;">
   <button class="print" onclick="window.print()">🖨️ 인쇄</button>
-  <button class="purple" onclick="saveBackup()">💾 백업 저장 (이 날짜+차수, 전 거래처)</button>
+  <button class="purple" onclick="syncWithGoogleSheets()">☁️ 구글시트 동기화 (저장+다른PC 이력 가져오기)</button>
 </div>
 
 <!-- ====== History Modal ====== -->
@@ -214,10 +215,11 @@
       <button class="secondary" onclick="closeModal('historyModal')">닫기</button>
     </div>
     <div style="margin-bottom:10px;" class="row">
+      <button class="purple" onclick="refreshFromGoogleSheets()">🔄 구글시트에서 새로고침</button>
       <button onclick="exportAllJSON()">전체 JSON 내보내기</button>
       <button class="secondary" onclick="importJSON()">JSON 가져오기</button>
       <input type="file" id="importFile" accept=".json" style="display:none;" />
-      <span class="msg">로컬 저장 + 구글시트 동시 백업 (구글시트 설정 시)</span>
+      <span class="msg">다른 컴퓨터에서 저장한 백업도 구글시트 새로고침으로 가져올 수 있습니다</span>
     </div>
     <ul class="history-list" id="historyList"></ul>
   </div>
@@ -704,7 +706,77 @@ function loadBackups() {
 }
 function saveBackups(obj) { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); }
 
-function saveBackup() {
+// 이름 → ID 변환 헬퍼
+function getBuyerIdFromName(name) {
+  for (const [id, info] of Object.entries(BUYERS)) {
+    if (info.name === name) return id;
+  }
+  return null;
+}
+function getSupplierIdFromName(name) {
+  const s = SUPPLIERS.find(s => s.name === name);
+  return s ? s.id : null;
+}
+
+// 구글시트 데이터(행 배열) → 백업 객체로 재구성
+// 같은 (날짜, 차수, 발주자) 키에 대해 가장 최근 저장된 batch만 사용
+function parseSheetToBackups(rows) {
+  if (!rows || rows.length < 2) return {};
+  const dataRows = rows.slice(1); // 헤더 제외
+
+  // 1단계: 키별 최신 저장일시 찾기
+  const latestTs = {};
+  dataRows.forEach(row => {
+    const [ts, date, slot, buyer] = row;
+    if (!ts || !date || !buyer) return;
+    const buyerId = getBuyerIdFromName(buyer);
+    if (!buyerId) return;
+    const key = `${date}__${slot || ''}__${buyerId}`;
+    if (!latestTs[key] || String(ts) > String(latestTs[key])) latestTs[key] = ts;
+  });
+
+  // 2단계: 최신 batch에 해당하는 행만 수집
+  const grouped = {};
+  dataRows.forEach(row => {
+    const [ts, date, slot, buyer, supplier, name, color, qty] = row;
+    if (!ts || !date) return;
+    const buyerId = getBuyerIdFromName(buyer);
+    if (!buyerId) return;
+    const key = `${date}__${slot || ''}__${buyerId}`;
+    if (String(ts) !== String(latestTs[key])) return; // 이전 batch는 스킵
+
+    if (!grouped[key]) {
+      grouped[key] = {
+        date, slot: slot || '',
+        buyer, buyerId,
+        suppliers: {},
+        totalItems: 0,
+        savedAt: String(ts)
+      };
+    }
+    const supId = getSupplierIdFromName(supplier);
+    if (!supId || !name) return;
+    if (!grouped[key].suppliers[supId]) grouped[key].suppliers[supId] = [];
+    grouped[key].suppliers[supId].push({
+      name: String(name), color: String(color || ''), qty: String(qty || '')
+    });
+    grouped[key].totalItems++;
+  });
+  return grouped;
+}
+
+// ===== 메인 동기화 함수 =====
+// 1) 현재 화면 데이터를 로컬+구글시트에 저장 (있을 때만)
+// 2) 구글시트의 모든 백업을 가져와 로컬과 병합 (다른 컴퓨터에서 저장한 것 포함)
+async function syncWithGoogleSheets() {
+  const url = localStorage.getItem(WEBHOOK_KEY);
+  if (!url) {
+    if (confirm('구글시트 동기화 URL이 설정되지 않았습니다.\n\n[확인]을 누르면 설정 창이 열립니다.\n초기 설정은 1회만 하면 됩니다.')) {
+      openSettings();
+    }
+    return;
+  }
+
   const date = document.getElementById('dateInput').value || todayStr();
   const slot = document.getElementById('slotSelect').value;
   const buyer = document.getElementById('buyerSelect').value;
@@ -713,9 +785,10 @@ function saveBackup() {
   // 현재 화면 편집 내용 반영
   harvestCurrentSupplier();
 
-  // 모든 거래처의 아이템 수집
+  // 현재 화면 데이터 수집
   const suppliers = {};
   let totalItems = 0;
+  const flatItems = [];
   const summaryParts = [];
   SUPPLIERS.forEach(s => {
     const items = (classified[s.id] || [])
@@ -725,42 +798,94 @@ function saveBackup() {
       suppliers[s.id] = items;
       totalItems += items.length;
       summaryParts.push(`${s.name} ${items.length}`);
+      items.forEach(it => flatItems.push({ supplier: s.name, name: it.name, color: it.color, qty: it.qty }));
     }
   });
 
-  if (totalItems === 0) { setStatus('저장할 항목이 없습니다. 데이터를 먼저 분류해주세요.', '#dc2626'); return; }
+  setStatus('☁️ 구글시트 동기화 중...', '#2563eb');
 
-  const backups = loadBackups();
-  const key = `${date}__${slot}__${buyer}`;
-  backups[key] = {
-    date, slot,
-    buyer: buyerName, buyerId: buyer,
-    suppliers,
-    totalItems,
-    savedAt: new Date().toISOString()
-  };
-  saveBackups(backups);
+  // 1) 현재 화면 데이터가 있으면 로컬+구글시트에 저장
+  if (totalItems > 0) {
+    const backups = loadBackups();
+    const key = `${date}__${slot}__${buyer}`;
+    backups[key] = {
+      date, slot,
+      buyer: buyerName, buyerId: buyer,
+      suppliers,
+      totalItems,
+      savedAt: new Date().toISOString()
+    };
+    saveBackups(backups);
 
-  const summary = `${date} ${slot} / ${buyerName} / 총 ${totalItems}건 (${summaryParts.join(' · ')})`;
-  setStatus(`로컬 백업 저장: ${summary}`, '#059669');
-
-  // 구글시트 백업 (설정된 경우): 전 거래처 행을 한 번에 전송
-  const url = localStorage.getItem(WEBHOOK_KEY);
-  if (url) {
-    const flatItems = [];
-    SUPPLIERS.forEach(s => {
-      (suppliers[s.id] || []).forEach(it => {
-        flatItems.push({ supplier: s.name, name: it.name, color: it.color, qty: it.qty });
+    try {
+      await fetch(url, {
+        method: 'POST',
+        body: JSON.stringify({ date, slot, buyer: buyerName, items: flatItems })
       });
+    } catch (e) {
+      setStatus(`로컬 저장됨. 구글시트 업로드 실패: ${e.message}`, '#b45309');
+      // 업로드 실패해도 read는 시도
+    }
+  }
+
+  // 2) 구글시트에서 전체 데이터 가져와 로컬과 병합 (다른 컴퓨터 백업 포함)
+  try {
+    const resp = await fetch(url);
+    const text = await resp.text();
+    const allRows = JSON.parse(text);
+    if (!Array.isArray(allRows)) throw new Error('응답 형식 오류 (배열 아님)');
+
+    const reconstructed = parseSheetToBackups(allRows);
+    const merged = loadBackups();
+    let newCount = 0, updatedCount = 0;
+    Object.entries(reconstructed).forEach(([k, v]) => {
+      const existing = merged[k];
+      if (!existing) {
+        merged[k] = v; newCount++;
+      } else if (String(v.savedAt) > String(existing.savedAt)) {
+        merged[k] = v; updatedCount++;
+      }
     });
-    fetch(url, {
-      method: 'POST',
-      body: JSON.stringify({ date, slot, buyer: buyerName, items: flatItems })
-    }).then(r => r.text()).then(t => {
-      setStatus(`백업 완료 (로컬+구글시트): ${summary}`, '#059669');
-    }).catch(e => {
-      setStatus(`로컬 저장됨. 구글시트 전송 실패: ${e.message}`, '#b45309');
+    saveBackups(merged);
+
+    const localMsg = totalItems > 0 ? `이번 저장 ${totalItems}건 (${summaryParts.join(' · ')})` : '저장할 데이터 없음';
+    const remoteMsg = `구글시트에서 신규 ${newCount}건 / 갱신 ${updatedCount}건`;
+    setStatus(`✅ 동기화 완료 — ${localMsg} / ${remoteMsg}`, '#059669');
+
+    // 이력 모달이 열려있으면 새로고침
+    if (document.getElementById('historyModal').classList.contains('show')) {
+      renderHistory();
+    }
+  } catch (e) {
+    setStatus(`❌ 구글시트에서 가져오기 실패: ${e.message}`, '#dc2626');
+  }
+}
+
+// 이력 모달용: 저장 없이 구글시트에서만 새로고침
+async function refreshFromGoogleSheets() {
+  const url = localStorage.getItem(WEBHOOK_KEY);
+  if (!url) {
+    alert('구글시트 동기화 URL이 설정되지 않았습니다.\n⚙️ 구글시트 설정에서 먼저 설정해주세요.');
+    return;
+  }
+  setStatus('☁️ 구글시트에서 가져오는 중...', '#2563eb');
+  try {
+    const resp = await fetch(url);
+    const text = await resp.text();
+    const allRows = JSON.parse(text);
+    const reconstructed = parseSheetToBackups(allRows);
+    const merged = loadBackups();
+    let newCount = 0, updatedCount = 0;
+    Object.entries(reconstructed).forEach(([k, v]) => {
+      const existing = merged[k];
+      if (!existing) { merged[k] = v; newCount++; }
+      else if (String(v.savedAt) > String(existing.savedAt)) { merged[k] = v; updatedCount++; }
     });
+    saveBackups(merged);
+    renderHistory();
+    setStatus(`✅ 구글시트 동기화 — 신규 ${newCount}건 / 갱신 ${updatedCount}건`, '#059669');
+  } catch (e) {
+    setStatus(`❌ 가져오기 실패: ${e.message}`, '#dc2626');
   }
 }
 

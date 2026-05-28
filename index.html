@@ -170,6 +170,18 @@
         <label>발주일자: </label>
         <input type="date" id="dateInput" />
       </div>
+      <div>
+        <label>발주차수: </label>
+        <select id="slotSelect">
+          <option value="9시">9시</option>
+          <option value="2시">2시</option>
+          <option value="추가1">추가 1</option>
+          <option value="추가2">추가 2</option>
+          <option value="추가3">추가 3</option>
+          <option value="추가4">추가 4</option>
+          <option value="추가5">추가 5</option>
+        </select>
+      </div>
       <button class="secondary" onclick="clearAll()">초기화</button>
       <button class="purple" onclick="openHistory()">📚 백업 이력</button>
       <button class="purple" onclick="openSettings()">⚙️ 구글시트 설정</button>
@@ -243,11 +255,11 @@
   const data = JSON.parse(e.postData.contents);
   // 헤더 자동 생성
   if (sheet.getLastRow() === 0) {
-    sheet.appendRow(['저장일시','발주일자','발주자','거래처','상품명','색상','수량','옵션원본']);
+    sheet.appendRow(['저장일시','발주일자','발주차수','발주자','거래처','상품명','색상','수량','옵션원본']);
   }
   const ts = new Date().toISOString();
   (data.items || []).forEach(it => {
-    sheet.appendRow([ts, data.date, data.buyer, data.supplier, it.name, it.color, it.qty, it.option || '']);
+    sheet.appendRow([ts, data.date, data.slot || '', data.buyer, data.supplier, it.name, it.color, it.qty, it.option || '']);
   });
   return ContentService.createTextOutput(JSON.stringify({status:'ok', saved: (data.items || []).length}))
     .setMimeType(ContentService.MimeType.JSON);
@@ -303,6 +315,12 @@ document.getElementById('dateInput').value = todayStr();
 document.getElementById('dateInput').addEventListener('change', () => {
   if (currentSupplier) renderForm(currentSupplier);
 });
+
+// 현재 시각으로 차수 자동 선택: 12시 이전이면 9시, 이후면 2시
+(function initSlot() {
+  const h = new Date().getHours();
+  document.getElementById('slotSelect').value = (h < 12) ? '9시' : '2시';
+})();
 
 // ====== 키워드 매칭 ======
 function matchSupplier(productName, optionName) {
@@ -668,6 +686,7 @@ function saveBackups(obj) { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj
 function saveBackup() {
   if (!currentSupplier) { setStatus('먼저 거래처를 선택하세요.', '#dc2626'); return; }
   const date = document.getElementById('dateInput').value || todayStr();
+  const slot = document.getElementById('slotSelect').value;
   const buyer = document.getElementById('buyerSelect').value;
   const buyerName = BUYERS[buyer].name;
   const supplier = SUPPLIERS.find(s => s.id === currentSupplier);
@@ -686,23 +705,24 @@ function saveBackup() {
   if (items.length === 0) { setStatus('저장할 항목이 없습니다.', '#dc2626'); return; }
 
   const backups = loadBackups();
-  const key = `${date}__${supplier.id}__${buyer}`;
+  const key = `${date}__${slot}__${supplier.id}__${buyer}`;
   backups[key] = {
-    date, supplier: supplier.name, supplierId: supplier.id,
+    date, slot,
+    supplier: supplier.name, supplierId: supplier.id,
     buyer: buyerName, buyerId: buyer,
     items, savedAt: new Date().toISOString()
   };
   saveBackups(backups);
-  setStatus(`로컬 백업 저장: ${date} / ${supplier.name} / ${items.length}건`, '#059669');
+  setStatus(`로컬 백업 저장: ${date} ${slot} / ${supplier.name} / ${items.length}건`, '#059669');
 
   // 구글시트 백업 (설정된 경우)
   const url = localStorage.getItem(WEBHOOK_KEY);
   if (url) {
     fetch(url, {
       method: 'POST',
-      body: JSON.stringify({ date, buyer: buyerName, supplier: supplier.name, items })
+      body: JSON.stringify({ date, slot, buyer: buyerName, supplier: supplier.name, items })
     }).then(r => r.text()).then(t => {
-      setStatus(`백업 완료 (로컬+구글시트): ${date} / ${supplier.name} / ${items.length}건`, '#059669');
+      setStatus(`백업 완료 (로컬+구글시트): ${date} ${slot} / ${supplier.name} / ${items.length}건`, '#059669');
     }).catch(e => {
       setStatus(`로컬 저장됨. 구글시트 전송 실패: ${e.message}`, '#b45309');
     });
@@ -725,9 +745,10 @@ function renderHistory() {
   }
   ul.innerHTML = keys.map(k => {
     const b = backups[k];
+    const slotLabel = b.slot ? `<span style="display:inline-block; background:#dbeafe; color:#1e40af; padding:1px 8px; border-radius:10px; font-size:11px; margin-left:6px;">${escapeHtml(b.slot)}</span>` : '';
     return `<li>
       <div>
-        <b>${b.date}</b> — ${escapeHtml(b.supplier)} (${escapeHtml(b.buyer)})
+        <b>${b.date}</b>${slotLabel} — ${escapeHtml(b.supplier)} (${escapeHtml(b.buyer)})
         <div class="history-meta">${b.items.length}건 · 저장 ${new Date(b.savedAt).toLocaleString('ko-KR')}</div>
       </div>
       <div>
@@ -742,7 +763,7 @@ function renderHistory() {
 function showDetail(key) {
   const b = loadBackups()[key];
   if (!b) return;
-  document.getElementById('detailTitle').textContent = `${b.date} — ${b.supplier} (${b.buyer})`;
+  document.getElementById('detailTitle').textContent = `${b.date}${b.slot ? ' [' + b.slot + ']' : ''} — ${b.supplier} (${b.buyer})`;
   const rows = b.items.map((it, i) => `<tr>
     <td>${i+1}</td><td>${escapeHtml(it.name)}</td><td>${escapeHtml(it.color)}</td><td>${escapeHtml(it.qty)}</td>
   </tr>`).join('');
@@ -764,6 +785,7 @@ function loadBackupItem(key) {
   if (!b) return;
   document.getElementById('dateInput').value = b.date;
   document.getElementById('buyerSelect').value = b.buyerId;
+  if (b.slot) document.getElementById('slotSelect').value = b.slot;
   SUPPLIERS.forEach(s => classified[s.id] = []);
   classified[b.supplierId] = b.items.map(it => ({
     name: it.name, color: it.color, qty: it.qty, option: ''
@@ -771,7 +793,7 @@ function loadBackupItem(key) {
   renderTabs();
   selectSupplier(b.supplierId);
   closeModal('historyModal');
-  setStatus(`불러옴: ${b.date} / ${b.supplier}`, '#059669');
+  setStatus(`불러옴: ${b.date}${b.slot ? ' ' + b.slot : ''} / ${b.supplier}`, '#059669');
 }
 
 function deleteBackup(key) {
@@ -826,7 +848,7 @@ function testWebhook() {
   document.getElementById('settingsMsg').textContent = '테스트 중...';
   fetch(url, {
     method: 'POST',
-    body: JSON.stringify({ date: todayStr(), buyer: '테스트', supplier: '연결테스트', items: [{ name: '테스트', color: '-', qty: 1 }] })
+    body: JSON.stringify({ date: todayStr(), slot: '테스트', buyer: '테스트', supplier: '연결테스트', items: [{ name: '테스트', color: '-', qty: 1 }] })
   }).then(r => r.text()).then(t => {
     document.getElementById('settingsMsg').textContent = '✅ 성공: ' + t.slice(0, 100);
     document.getElementById('settingsMsg').style.color = '#059669';
